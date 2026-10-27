@@ -6,7 +6,7 @@
 
 generator client {
   provider        = "prisma-client-js"
-  previewFeatures = ["fullTextSearch", "fullTextIndex", "postgresqlExtensions"]
+  previewFeatures = ["fullTextSearchPostgres", "fullTextIndex", "postgresqlExtensions"]
 }
 
 datasource db {
@@ -57,6 +57,36 @@ enum OrganizationStatus {
   ACTIVE
   SUSPENDED
   INACTIVE
+}
+
+enum OrganizationRelationshipType {
+  HOSPITAL_PHARMACY
+  HOSPITAL_INSURER
+  PHARMACY_INSURER
+  HOSPITAL_LAB
+  HOSPITAL_SUPPLIER
+  ORGANIZATION_PROVIDER
+  REFERRAL_NETWORK
+  CUSTOM
+}
+
+enum OrganizationRelationshipStatus {
+  DRAFT
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+  TERMINATED
+}
+
+enum OrganizationCapabilityType {
+  HOSPITAL_SERVICES
+  PHARMACY_DISPENSING
+  INSURANCE_UNDERWRITING
+  CLAIMS_PROCESSING
+  LAB_PROCESSING
+  IMAGING_SERVICES
+  SUPPLY_FULFILLMENT
+  TELEHEALTH
 }
 
 enum ProviderType {
@@ -170,6 +200,67 @@ enum TokenType {
   VERIFICATION
   PASSWORD_RESET
   FHIR_ACCESS
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  CHECKED_IN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum HL7MessageStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  FAILED
+  ACKNOWLEDGED
+}
+
+enum PatientAccessActorType {
+  USER
+  PROVIDER
+  STAFF
+  CAREGIVER
+  SYSTEM
+  API_CLIENT
+  EXTERNAL_SYSTEM
+}
+
+enum PatientAccessActionType {
+  VIEW
+  CREATE
+  UPDATE
+  DELETE
+  EXPORT
+  DOWNLOAD
+  PRINT
+  SHARE
+  EMERGENCY_ACCESS
+}
+
+enum DigitalSignatureSignerType {
+  USER
+  PROVIDER
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  IN_PROGRESS
+  DELIVERED
+  FAILED
+  ABANDONED
+}
+
+enum DataExportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  EXPIRED
+  REVOKED
 }
 
 enum ConsentType {
@@ -287,6 +378,14 @@ enum InsuranceStatus {
   PENDING
 }
 
+enum EligibilityCheckStatus {
+  PENDING
+  VERIFIED
+  INELIGIBLE
+  PARTIAL
+  FAILED
+}
+
 enum ClaimStatus {
   DRAFT
   SUBMITTED
@@ -331,6 +430,28 @@ enum PaymentStatus {
   FAILED
   REFUNDED
   CANCELLED
+}
+
+enum RefundStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  PROCESSED
+  CANCELLED
+}
+
+enum FinancialTransactionType {
+  CREDIT
+  DEBIT
+  REFUND
+  ADJUSTMENT
+  TRANSFER
+}
+
+enum AllocationType {
+  INVOICE
+  CLAIM
+  SETTLEMENT
 }
 
 enum PaymentProofStatus {
@@ -452,6 +573,7 @@ enum ReminderType {
 
 enum ReminderFrequency {
   ONE_TIME
+  MULTIPLE
   DAILY
   WEEKLY
   MONTHLY
@@ -492,6 +614,73 @@ enum RelationshipType {
   ADOPTED_CHILD
   GUARDIAN
   WARD
+}
+
+enum PrescriptionRoutingStatus {
+  PENDING
+  SENT
+  RECEIVED
+  ACCEPTED
+  REJECTED
+  REDIRECTED
+  FULFILLED
+  CANCELLED
+}
+
+enum ClarificationStatus {
+  OPEN
+  RESPONDED
+  RESOLVED
+  CANCELLED
+}
+
+enum VerificationEntityType {
+  USER
+  PROVIDER
+  ORGANIZATION
+}
+
+enum VerificationStatus {
+  PENDING
+  IN_REVIEW
+  VERIFIED
+  REJECTED
+  EXPIRED
+}
+
+enum TransferRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  COMPLETED
+  CANCELLED
+}
+
+enum SettlementCaseStatus {
+  OPEN
+  DECIDED
+  SETTLING
+  SETTLED
+  FAILED
+  CANCELLED
+}
+
+enum SettlementDecisionType {
+  PATIENT_PAYS
+  HOSPITAL_PAYS_AND_BILLS
+  INSURER_PAYS
+  REDIRECT
+  MICRO_AGREEMENT
+  MANUAL_REVIEW
+}
+
+enum SettlementObligationStatus {
+  PENDING
+  INVOICED
+  PAID
+  WAIVED
+  CANCELLED
 }
 
 enum FHIRResourceType {
@@ -548,16 +737,17 @@ model User {
   dateOfBirth DateTime @map("date_of_birth") @db.Date
   gender      String?  @db.VarChar(20)
 
-  // Banking-grade encryption
-  emailEncrypted Bytes  @unique @map("email_encrypted")
-  emailHash      String @unique @map("email_hash") @db.VarChar(64)
-  phoneEncrypted Bytes  @map("phone_encrypted")
-  phoneHash      String @map("phone_hash") @db.VarChar(64)
-  address        Json?
+  // Envelope encryption for PHI plus normalized searchable hashes
+  emailEncrypted  Bytes  @map("email_encrypted")
+  emailHash       String @unique @map("email_hash") @db.VarChar(64)
+  emailKeyVersion Int    @default(1) @map("email_key_version")
+  phoneEncrypted  Bytes  @map("phone_encrypted")
+  phoneHash       String @map("phone_hash") @db.VarChar(64)
+  phoneKeyVersion Int    @default(1) @map("phone_key_version")
+  address         Json?
 
   // Password security (Argon2id recommended)
   passwordHash        String    @map("password_hash") @db.VarChar(255)
-  passwordSalt        String    @map("password_salt") @db.VarChar(255)
   passwordChangedAt   DateTime? @map("password_changed_at")
   failedLoginAttempts Int       @default(0) @map("failed_login_attempts")
   lockedUntil         DateTime? @map("locked_until")
@@ -570,7 +760,6 @@ model User {
   // Session management
   lastLogin    DateTime? @map("last_login")
   lastActivity DateTime? @map("last_activity")
-  sessionToken String?   @unique @map("session_token") @db.VarChar(255)
 
   // Account status
   status        AccountStatus @default(PENDING_VERIFICATION)
@@ -590,13 +779,16 @@ model User {
 
   // Relations
   patients                    Patient[]
+  closedPatients              Patient[]            @relation("PatientClosedBy")
   healthcareProvider          HealthcareProvider?
   organizationStaff           OrganizationStaff[]
   managedByCaregivers         Caregiver[]          @relation("ManagedUser")
   caregiverFor                Caregiver[]          @relation("CaregiverUser")
   otps                        Otp[]
   accessTokens                AccessToken[]
+  sessions                    UserSession[]
   userRoles                   UserRole[]
+  grantedUserRoles            UserRole[]           @relation("RoleGrantedBy")
   notifications               Notification[]
   sentMessages                Message[]            @relation("SentMessages")
   receivedMessages            Message[]            @relation("ReceivedMessages")
@@ -606,10 +798,13 @@ model User {
   complianceIncidentsReporter ComplianceIncident[] @relation("IncidentReporter")
   complianceIncidentsAssigned ComplianceIncident[] @relation("IncidentAssigned")
   systemSettingsUpdates       SystemSetting[]
+  verifications               KycVerification[]
+  reportedReactionReports     ReactionReport[]     @relation("ReactionReportedByUser")
   // digitalSignatures     DigitalSignature[]
 
   digitalSignatures DigitalSignature[] @relation("DigitalSignatureSignerUser")
 
+  @@index([phoneHash])
   // @@unique([staffId, roleId])
   // @@map("staff_assignments")
 }
@@ -779,10 +974,12 @@ model Patient {
   updatedAt DateTime  @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  closedByUser User? @relation("PatientClosedBy", fields: [closedBy], references: [id])
 
   caregivers      Caregiver[]      @relation("ManagedPatient")
   proxyActionLogs ProxyActionLog[]
+  organizations   PatientOrganization[]
 
   medicalRecords       MedicalRecord[]
   encounters           Encounter[]
@@ -790,11 +987,11 @@ model Patient {
   labResults           LabResult[]
   labOrders            LabOrder[]
   imagingStudies       ImagingStudy[]
-  patientInsurance     PatientInsurance[]
+  coverageEnrollments  CoverageEnrollment[]
   insuranceClaims      InsuranceClaim[]
   invoices             Invoice[]
   payments             Payment[]
-  dataConsents         DataConsent[]
+  consentGrants        ConsentGrant[]
   appointments         Appointment[]
   vitalSigns           VitalSign[]
   allergies            Allergy[]
@@ -813,6 +1010,10 @@ model Patient {
   familyHealthHistory  FamilyHealthHistory[]
   fhirResources        FHIRResource[]
   patientAccessLogs    PatientAccessLog[]
+  transferRequests     RecordTransferRequest[] @relation("TransferRequestPatient")
+  emergencyAccessGrants EmergencyAccessGrant[]
+  reactionReports      ReactionReport[]
+  eligibilityChecks    EligibilityCheck[]
 
   @@index([patientCode])
   @@index([userId])
@@ -873,6 +1074,7 @@ model HealthcareProvider {
 
   user                     User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
   organizationAffiliations ProviderOrganization[]
+  patientOrganizations     PatientOrganization[]   @relation("PatientOrganizationAssignedProvider")
   encounters               Encounter[]
   prescriptions            Prescription[]
   appointments             Appointment[]
@@ -882,6 +1084,8 @@ model HealthcareProvider {
   // digitalSignatures         DigitalSignature[]
 
   digitalSignatures DigitalSignature[] @relation("DigitalSignatureSignerProvider")
+  verifications     KycVerification[]
+  reactionReports   ReactionReport[]   @relation("ReactionReportedByProvider")
 
   @@index([providerCode])
   @@index([fhirId])
@@ -974,6 +1178,11 @@ model Organization {
   addonSubscriptions        AddonSubscription[]
   apiServices               ApiService[]
   apiKeys                   ApiKey[]
+  outgoingRelationships     OrganizationRelationship[] @relation("OrganizationRelationshipSource")
+  incomingRelationships     OrganizationRelationship[] @relation("OrganizationRelationshipTarget")
+  capabilities              OrganizationCapability[]
+  contractsAsPrimary        OrganizationContract[]     @relation("OrganizationContractPrimary")
+  contractsAsSecondary      OrganizationContract[]     @relation("OrganizationContractSecondary")
   medicalRecords            MedicalRecord[]
   encounters                Encounter[]
   appointments              Appointment[]
@@ -991,15 +1200,19 @@ model Organization {
   purchaseOrders            PurchaseOrder[]        @relation("HospitalPurchaseOrders")
   supplierOrders            PurchaseOrder[]        @relation("SupplierPurchaseOrders")
   insurancePlans            InsurancePlan[]
-  patientInsurance          PatientInsurance[]
+  coverageEnrollments       CoverageEnrollment[]
   insuranceClaims           InsuranceClaim[]
   invoicesHospital          Invoice[]              @relation("HospitalInvoices")
   invoicesPharmacy          Invoice[]              @relation("PharmacyInvoices")
   pharmacyInventory         PharmacyInventory[]
   prescriptionDispenses     PrescriptionDispense[]
-  dataConsentsGrantor       DataConsent[]          @relation("GrantorOrganization")
-  dataConsentsGrantee       DataConsent[]          @relation("GranteeOrganization")
+  prescriptionRoutingFromHospital PrescriptionRouting[] @relation("PrescriptionRoutingSourceHospital")
+  prescriptionRoutingToPharmacy   PrescriptionRouting[] @relation("PrescriptionRoutingTargetPharmacy")
+  prescriptionClarifications      PrescriptionClarification[]
+  consentGrantsIssued       ConsentGrant[]         @relation("GrantorOrganization")
+  consentGrantsReceived     ConsentGrant[]         @relation("GranteeOrganization")
   roles                     Role[]
+  patientOrganizations      PatientOrganization[]
   systemSettings            SystemSetting[]
   externalSystems           ExternalSystem[]
   webhookSubscriptions      WebhookSubscription[]
@@ -1011,10 +1224,20 @@ model Organization {
   longitude                 Decimal?               @db.Decimal(11, 8)
   geog                      Json?                  @map("geog") // { "type": "Point", "coordinates": [longitude, latitude] }
   locationUpdatedAt         DateTime?              @map("location_updated_at")
-  transactions              Transaction[]
+  financialTransactions     FinancialTransaction[]
   payments                  Payment[]
   balances                  OrganizationBalance[]
   pharmacies                Pharmacy[]
+  transferRequestsOut       RecordTransferRequest[] @relation("TransferRequestSourceOrganization")
+  transferRequestsIn        RecordTransferRequest[] @relation("TransferRequestTargetOrganization")
+  settlementCases           SettlementCase[]
+  settlementObligations     SettlementObligation[]
+  settlementLedgerEntries   SettlementLedgerEntry[]
+  eligibilityChecksRequested EligibilityCheck[] @relation("EligibilityRequestingOrganization")
+  eligibilityChecksAsPayer  EligibilityCheck[] @relation("EligibilityInsuranceCompany")
+  claimSubmissionLogs       ClaimSubmissionLog[]
+  kycVerifications          KycVerification[]
+  emergencyAccessGrants     EmergencyAccessGrant[]
 
   @@index([orgType, deletedAt])
   @@index([orgCode, deletedAt])
@@ -1024,6 +1247,73 @@ model Organization {
   @@index([latitude, longitude])
   @@index([orgType, latitude, longitude])
   @@map("organizations")
+}
+
+model OrganizationRelationship {
+  id                   String                     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  sourceOrganizationId String                     @map("source_organization_id") @db.Uuid
+  targetOrganizationId String                     @map("target_organization_id") @db.Uuid
+  relationshipType     OrganizationRelationshipType @map("relationship_type")
+  status               OrganizationRelationshipStatus @default(DRAFT)
+  networkCode          String?                    @map("network_code") @db.VarChar(50)
+  allowsClaims         Boolean                    @default(false) @map("allows_claims")
+  allowsPrescriptions  Boolean                    @default(false) @map("allows_prescriptions")
+  allowsDataExchange   Boolean                    @default(false) @map("allows_data_exchange")
+  terms                Json?
+  effectiveFrom        DateTime?                  @map("effective_from") @db.Date
+  effectiveTo          DateTime?                  @map("effective_to") @db.Date
+  createdAt            DateTime                   @default(now()) @map("created_at")
+  updatedAt            DateTime                   @updatedAt @map("updated_at")
+
+  sourceOrganization Organization @relation("OrganizationRelationshipSource", fields: [sourceOrganizationId], references: [id])
+  targetOrganization Organization @relation("OrganizationRelationshipTarget", fields: [targetOrganizationId], references: [id])
+  contracts          OrganizationContract[]
+  settlementCases    SettlementCase[]
+  prescriptionRoutings PrescriptionRouting[]
+
+  @@unique([sourceOrganizationId, targetOrganizationId, relationshipType])
+  @@index([sourceOrganizationId, status])
+  @@index([targetOrganizationId, status])
+  @@map("organization_relationships")
+}
+
+model OrganizationCapability {
+  id             String                    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  organizationId String                    @map("organization_id") @db.Uuid
+  capabilityType OrganizationCapabilityType @map("capability_type")
+  config         Json?
+  active         Boolean                   @default(true)
+  createdAt      DateTime                  @default(now()) @map("created_at")
+  updatedAt      DateTime                  @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, capabilityType])
+  @@index([organizationId, active])
+  @@map("organization_capabilities")
+}
+
+model OrganizationContract {
+  id                        String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  organizationRelationshipId String? @map("organization_relationship_id") @db.Uuid
+  primaryOrganizationId     String   @map("primary_organization_id") @db.Uuid
+  secondaryOrganizationId   String   @map("secondary_organization_id") @db.Uuid
+  contractCode              String   @unique @map("contract_code") @db.VarChar(50)
+  title                     String   @db.VarChar(255)
+  terms                     Json
+  effectiveFrom             DateTime @map("effective_from") @db.Date
+  effectiveTo               DateTime? @map("effective_to") @db.Date
+  active                    Boolean  @default(true)
+  createdAt                 DateTime @default(now()) @map("created_at")
+  updatedAt                 DateTime @updatedAt @map("updated_at")
+
+  relationship           OrganizationRelationship? @relation(fields: [organizationRelationshipId], references: [id])
+  primaryOrganization    Organization             @relation("OrganizationContractPrimary", fields: [primaryOrganizationId], references: [id])
+  secondaryOrganization  Organization             @relation("OrganizationContractSecondary", fields: [secondaryOrganizationId], references: [id])
+
+  @@index([primaryOrganizationId, active])
+  @@index([secondaryOrganizationId, active])
+  @@map("organization_contracts")
 }
 
 // ============================================================================
@@ -1297,6 +1587,34 @@ model CareReminder {
   @@index([patientId, active])
   @@index([type, active])
   @@map("care_reminders")
+}
+
+model ReactionReport {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  patientId   String   @map("patient_id") @db.Uuid
+  encounterId String?  @map("encounter_id") @db.Uuid
+  providerId  String?  @map("provider_id") @db.Uuid
+  reportedByUserId String? @map("reported_by_user_id") @db.Uuid
+
+  symptom     String   @db.VarChar(255)
+  severity    String?  @db.VarChar(50)
+  description String?  @db.Text
+  occurredAt  DateTime? @map("occurred_at")
+  resolvedAt  DateTime? @map("resolved_at")
+  metadata    Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  patient        Patient             @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  encounter      Encounter?          @relation(fields: [encounterId], references: [id])
+  provider       HealthcareProvider? @relation("ReactionReportedByProvider", fields: [providerId], references: [id])
+  reportedByUser User?               @relation("ReactionReportedByUser", fields: [reportedByUserId], references: [id])
+
+  @@index([patientId, createdAt(sort: Desc)])
+  @@index([encounterId])
+  @@index([providerId])
+  @@map("reaction_reports")
 }
 
 model ReminderDeliveryLog {
@@ -1724,6 +2042,41 @@ model MedicalRecord {
   @@map("medical_records")
 }
 
+model PatientOrganization {
+  id             String  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  patientId      String  @map("patient_id") @db.Uuid
+  organizationId String  @map("organization_id") @db.Uuid
+  providerId     String? @map("provider_id") @db.Uuid
+
+  externalPatientId String? @map("external_patient_id") @db.VarChar(100)
+  mrnEncrypted      Bytes?  @map("mrn_encrypted")
+  mrnHash           String? @map("mrn_hash") @db.VarChar(64)
+  mrnKeyVersion     Int     @default(1) @map("mrn_key_version")
+
+  isPrimary Boolean @default(false) @map("is_primary")
+  active    Boolean @default(true)
+
+  consentScope Json?
+  metadata     Json?
+
+  joinedAt DateTime  @default(now()) @map("joined_at")
+  endedAt  DateTime? @map("ended_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  patient      Patient             @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  provider     HealthcareProvider? @relation("PatientOrganizationAssignedProvider", fields: [providerId], references: [id])
+  coverageEnrollments CoverageEnrollment[]
+
+  @@unique([patientId, organizationId])
+  @@index([organizationId, active])
+  @@index([patientId, active])
+  @@index([mrnHash])
+  @@map("patient_organizations")
+}
+
 model Allergy {
   id        String @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   patientId String @map("patient_id") @db.Uuid
@@ -1892,7 +2245,7 @@ model Appointment {
   scheduledStart DateTime @map("scheduled_start")
   scheduledEnd   DateTime @map("scheduled_end")
 
-  status String @default("SCHEDULED") @db.VarChar(20)
+  status AppointmentStatus @default(SCHEDULED)
 
   checkedInAt DateTime? @map("checked_in_at")
 
@@ -1965,6 +2318,8 @@ model Encounter {
   prescriptions   Prescription[]
   insuranceClaims InsuranceClaim[]
   invoices        Invoice[]
+  reactionReports ReactionReport[]
+  eligibilityChecks EligibilityCheck[]
 
   @@index([patientId, startedAt])
   @@index([providerId, startedAt])
@@ -2056,7 +2411,9 @@ model Prescription {
   hospital   Organization            @relation(fields: [hospitalId], references: [id])
   dispenses  PrescriptionDispense[]
   reminders  CareReminder[]
-  footprints PrescriptionFootprint[]
+  trackingEvents PrescriptionTrackingEvent[]
+  routingEvents  PrescriptionRouting[]
+  clarifications PrescriptionClarification[]
 
   @@index([patientId, prescribedAt])
   @@index([providerId])
@@ -2097,7 +2454,7 @@ model PrescriptionDispense {
   @@map("prescription_dispenses")
 }
 
-model PrescriptionFootprint {
+model PrescriptionTrackingEvent {
   id             String @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   prescriptionId String @map("prescription_id") @db.Uuid
 
@@ -2118,6 +2475,51 @@ model PrescriptionFootprint {
 
   @@index([prescriptionId, timestamp])
   @@map("prescription_footprints")
+}
+
+model PrescriptionRouting {
+  id                String                    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  prescriptionId    String                    @map("prescription_id") @db.Uuid
+  sourceHospitalId  String                    @map("source_hospital_id") @db.Uuid
+  targetPharmacyId  String?                   @map("target_pharmacy_id") @db.Uuid
+  relationshipId    String?                   @map("relationship_id") @db.Uuid
+  status            PrescriptionRoutingStatus @default(PENDING)
+  rerouteReason     String?                   @map("reroute_reason") @db.Text
+  routingMetadata   Json?                     @map("routing_metadata")
+  sentAt            DateTime?                 @map("sent_at")
+  receivedAt        DateTime?                 @map("received_at")
+  fulfilledAt       DateTime?                 @map("fulfilled_at")
+  createdAt         DateTime                  @default(now()) @map("created_at")
+  updatedAt         DateTime                  @updatedAt @map("updated_at")
+
+  prescription   Prescription            @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+  sourceHospital Organization            @relation("PrescriptionRoutingSourceHospital", fields: [sourceHospitalId], references: [id])
+  targetPharmacy Organization?           @relation("PrescriptionRoutingTargetPharmacy", fields: [targetPharmacyId], references: [id])
+  relationship   OrganizationRelationship? @relation(fields: [relationshipId], references: [id])
+  settlementCases SettlementCase[]
+
+  @@index([prescriptionId, createdAt(sort: Desc)])
+  @@index([targetPharmacyId, status])
+  @@map("prescription_routing")
+}
+
+model PrescriptionClarification {
+  id             String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  prescriptionId String              @map("prescription_id") @db.Uuid
+  pharmacyId     String              @map("pharmacy_id") @db.Uuid
+  requestedBy    String              @map("requested_by") @db.Uuid
+  question       String              @db.Text
+  response       String?             @db.Text
+  status         ClarificationStatus @default(OPEN)
+  requestedAt    DateTime            @default(now()) @map("requested_at")
+  respondedAt    DateTime?           @map("responded_at")
+
+  prescription Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+  pharmacy     Organization @relation(fields: [pharmacyId], references: [id])
+
+  @@index([prescriptionId, status])
+  @@index([pharmacyId, requestedAt(sort: Desc)])
+  @@map("prescription_clarifications")
 }
 
 model PharmacyInventory {
@@ -2294,15 +2696,17 @@ model InsurancePlan {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   insuranceCompany Organization       @relation(fields: [insuranceCompanyId], references: [id])
-  patientInsurance PatientInsurance[]
+  coverageEnrollments CoverageEnrollment[]
+  eligibilityChecks   EligibilityCheck[]
 
   @@index([insuranceCompanyId, active])
   @@map("insurance_plans")
 }
 
-model PatientInsurance {
+model CoverageEnrollment {
   id                 String @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   patientId          String @map("patient_id") @db.Uuid
+  patientOrganizationId String? @map("patient_organization_id") @db.Uuid
   insuranceCompanyId String @map("insurance_company_id") @db.Uuid
   planId             String @map("plan_id") @db.Uuid
 
@@ -2327,14 +2731,46 @@ model PatientInsurance {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  patient          Patient          @relation(fields: [patientId], references: [id])
-  insuranceCompany Organization     @relation(fields: [insuranceCompanyId], references: [id])
-  plan             InsurancePlan    @relation(fields: [planId], references: [id])
-  claims           InsuranceClaim[]
+  patient             Patient              @relation(fields: [patientId], references: [id])
+  patientOrganization PatientOrganization? @relation(fields: [patientOrganizationId], references: [id])
+  insuranceCompany    Organization         @relation(fields: [insuranceCompanyId], references: [id])
+  plan                InsurancePlan        @relation(fields: [planId], references: [id])
+  claims              InsuranceClaim[]
+  eligibilityChecks   EligibilityCheck[]
 
   @@index([patientId, status])
   @@index([policyNumber])
+  @@index([patientOrganizationId])
   @@map("patient_insurance")
+}
+
+model EligibilityCheck {
+  id                   String                 @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  patientId            String                 @map("patient_id") @db.Uuid
+  coverageEnrollmentId String                 @map("coverage_enrollment_id") @db.Uuid
+  insuranceCompanyId   String                 @map("insurance_company_id") @db.Uuid
+  planId               String?                @map("plan_id") @db.Uuid
+  organizationId       String                 @map("organization_id") @db.Uuid
+  encounterId          String?                @map("encounter_id") @db.Uuid
+  status               EligibilityCheckStatus @default(PENDING)
+  requestPayload       Json?                  @map("request_payload")
+  responsePayload      Json?                  @map("response_payload")
+  checkedAt            DateTime?              @map("checked_at")
+  expiresAt            DateTime?              @map("expires_at")
+  checkedBy            String?                @map("checked_by") @db.Uuid
+  createdAt            DateTime               @default(now()) @map("created_at")
+
+  patient            Patient            @relation(fields: [patientId], references: [id])
+  coverageEnrollment CoverageEnrollment @relation(fields: [coverageEnrollmentId], references: [id], onDelete: Cascade)
+  insuranceCompany   Organization       @relation("EligibilityInsuranceCompany", fields: [insuranceCompanyId], references: [id])
+  plan               InsurancePlan?     @relation(fields: [planId], references: [id])
+  organization       Organization       @relation("EligibilityRequestingOrganization", fields: [organizationId], references: [id])
+  encounter          Encounter?         @relation(fields: [encounterId], references: [id])
+
+  @@index([patientId, createdAt(sort: Desc)])
+  @@index([coverageEnrollmentId, status])
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@map("eligibility_checks")
 }
 
 model InsuranceClaim {
@@ -2342,7 +2778,7 @@ model InsuranceClaim {
   claimNumber String @unique @map("claim_number") @db.VarChar(50)
 
   patientId          String  @map("patient_id") @db.Uuid
-  patientInsuranceId String  @map("patient_insurance_id") @db.Uuid
+  coverageEnrollmentId String  @map("patient_insurance_id") @db.Uuid
   encounterId        String? @map("encounter_id") @db.Uuid
   insuranceCompanyId String  @map("insurance_company_id") @db.Uuid
 
@@ -2373,15 +2809,55 @@ model InsuranceClaim {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  patient          Patient          @relation(fields: [patientId], references: [id])
-  patientInsurance PatientInsurance @relation(fields: [patientInsuranceId], references: [id])
-  encounter        Encounter?       @relation(fields: [encounterId], references: [id])
-  insuranceCompany Organization     @relation(fields: [insuranceCompanyId], references: [id])
+  patient            Patient             @relation(fields: [patientId], references: [id])
+  coverageEnrollment CoverageEnrollment  @relation(fields: [coverageEnrollmentId], references: [id])
+  encounter          Encounter?          @relation(fields: [encounterId], references: [id])
+  insuranceCompany   Organization        @relation(fields: [insuranceCompanyId], references: [id])
+  claimLines         ClaimLine[]
+  settlements        SettlementCase[]
+  allocations        PaymentAllocation[]
+  submissionLogs     ClaimSubmissionLog[]
 
   @@index([patientId, status])
   @@index([insuranceCompanyId, status])
   @@index([status, submittedAt])
   @@map("insurance_claims")
+}
+
+model ClaimLine {
+  id               String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  insuranceClaimId String   @map("insurance_claim_id") @db.Uuid
+  serviceCode      String?  @map("service_code") @db.VarChar(50)
+  description      String   @db.VarChar(255)
+  quantity         Decimal  @default(1) @db.Decimal(10, 2)
+  unitAmount       Decimal  @map("unit_amount") @db.Decimal(10, 2)
+  billedAmount     Decimal  @map("billed_amount") @db.Decimal(10, 2)
+  approvedAmount   Decimal? @map("approved_amount") @db.Decimal(10, 2)
+  patientResponsibility Decimal? @map("patient_responsibility") @db.Decimal(10, 2)
+  metadata         Json?
+
+  claim InsuranceClaim @relation(fields: [insuranceClaimId], references: [id], onDelete: Cascade)
+
+  @@index([insuranceClaimId])
+  @@map("claim_lines")
+}
+
+model ClaimSubmissionLog {
+  id               String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  insuranceClaimId String   @map("insurance_claim_id") @db.Uuid
+  organizationId   String   @map("organization_id") @db.Uuid
+  externalSystemId String?  @map("external_system_id") @db.Uuid
+  requestPayload   Json?    @map("request_payload")
+  responsePayload  Json?    @map("response_payload")
+  submittedAt      DateTime @default(now()) @map("submitted_at")
+
+  claim          InsuranceClaim @relation(fields: [insuranceClaimId], references: [id], onDelete: Cascade)
+  organization   Organization   @relation(fields: [organizationId], references: [id])
+  externalSystem ExternalSystem? @relation(fields: [externalSystemId], references: [id])
+
+  @@index([insuranceClaimId, submittedAt(sort: Desc)])
+  @@index([organizationId, submittedAt(sort: Desc)])
+  @@map("claim_submission_logs")
 }
 
 // ============================================================================
@@ -2396,8 +2872,6 @@ model Invoice {
   encounterId String? @map("encounter_id") @db.Uuid
   hospitalId  String? @map("hospital_id") @db.Uuid
   pharmacyId  String? @map("pharmacy_id") @db.Uuid
-
-  items Json[] @default([])
 
   subtotal    Decimal  @db.Decimal(10, 2)
   tax         Decimal? @db.Decimal(10, 2)
@@ -2423,10 +2897,29 @@ model Invoice {
   hospital  Organization? @relation("HospitalInvoices", fields: [hospitalId], references: [id])
   pharmacy  Organization? @relation("PharmacyInvoices", fields: [pharmacyId], references: [id])
   payments  Payment[]
+  lines     InvoiceLine[]
+  allocations PaymentAllocation[]
+  settlementCases SettlementCase[]
 
   @@index([patientId, status])
   @@index([status, dueDate])
   @@map("invoices")
+}
+
+model InvoiceLine {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  invoiceId   String   @map("invoice_id") @db.Uuid
+  description String   @db.VarChar(255)
+  quantity    Decimal  @default(1) @db.Decimal(10, 2)
+  unitAmount  Decimal  @map("unit_amount") @db.Decimal(10, 2)
+  totalAmount Decimal  @map("total_amount") @db.Decimal(10, 2)
+  category    String?  @db.VarChar(50)
+  metadata    Json?
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@map("invoice_lines")
 }
 
 model Payment {
@@ -2460,7 +2953,9 @@ model Payment {
   invoice      Invoice      @relation(fields: [invoiceId], references: [id])
   patient      Patient      @relation(fields: [patientId], references: [id])
   organization Organization @relation(fields: [organizationId], references: [id]) // ADD THIS
-  transaction  Transaction? // ADD THIS
+  financialTransaction FinancialTransaction?
+  allocations         PaymentAllocation[]
+  refunds             Refund[]
 
   @@index([invoiceId])
   @@index([patientId, createdAt(sort: Desc)])
@@ -2474,12 +2969,12 @@ model Payment {
 // 3. TRANSACTION MODEL FOR PAYMENT TRACKING
 // ============================================================================
 
-model Transaction {
+model FinancialTransaction {
   id             String @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   organizationId String @map("organization_id") @db.Uuid
   paymentId      String @unique @map("payment_id") @db.Uuid
 
-  transactionType String  @map("transaction_type") @db.VarChar(20) // CREDIT, DEBIT, REFUND
+  transactionType FinancialTransactionType @map("transaction_type")
   amount          Decimal @db.Decimal(10, 2)
   currency        String  @default("USD") @db.VarChar(3)
 
@@ -2513,6 +3008,43 @@ model Transaction {
   @@map("transactions")
 }
 
+model PaymentAllocation {
+  id                  String         @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  paymentId           String         @map("payment_id") @db.Uuid
+  invoiceId           String?        @map("invoice_id") @db.Uuid
+  insuranceClaimId    String?        @map("insurance_claim_id") @db.Uuid
+  settlementObligationId String?     @map("settlement_obligation_id") @db.Uuid
+  allocationType      AllocationType @map("allocation_type")
+  amount              Decimal        @db.Decimal(10, 2)
+  allocatedAt         DateTime       @default(now()) @map("allocated_at")
+
+  payment              Payment               @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoice              Invoice?              @relation(fields: [invoiceId], references: [id])
+  insuranceClaim       InsuranceClaim?       @relation(fields: [insuranceClaimId], references: [id])
+  settlementObligation SettlementObligation? @relation(fields: [settlementObligationId], references: [id])
+
+  @@index([paymentId, allocatedAt(sort: Desc)])
+  @@index([invoiceId])
+  @@index([insuranceClaimId])
+  @@index([settlementObligationId])
+  @@map("payment_allocations")
+}
+
+model Refund {
+  id         String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  paymentId  String       @map("payment_id") @db.Uuid
+  amount     Decimal      @db.Decimal(10, 2)
+  reason     String?      @db.Text
+  status     RefundStatus @default(REQUESTED)
+  requestedAt DateTime    @default(now()) @map("requested_at")
+  processedAt DateTime?   @map("processed_at")
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId, requestedAt(sort: Desc)])
+  @@map("refunds")
+}
+
 // ============================================================================
 // 4. ADD ORGANIZATION BALANCE MODEL
 // ============================================================================
@@ -2534,6 +3066,88 @@ model OrganizationBalance {
   organization Organization @relation(fields: [organizationId], references: [id])
 
   @@map("organization_balances")
+}
+
+model SettlementCase {
+  id                     String               @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  organizationId         String               @map("organization_id") @db.Uuid
+  insuranceClaimId       String?              @map("insurance_claim_id") @db.Uuid
+  invoiceId              String?              @map("invoice_id") @db.Uuid
+  prescriptionRoutingId  String?              @map("prescription_routing_id") @db.Uuid
+  relationshipId         String?              @map("relationship_id") @db.Uuid
+  issueCode              String               @map("issue_code") @db.VarChar(50)
+  issueSummary           String               @map("issue_summary") @db.Text
+  status                 SettlementCaseStatus @default(OPEN)
+  detectedAt             DateTime             @default(now()) @map("detected_at")
+  resolvedAt             DateTime?            @map("resolved_at")
+  metadata               Json?
+
+  organization        Organization            @relation(fields: [organizationId], references: [id])
+  insuranceClaim      InsuranceClaim?         @relation(fields: [insuranceClaimId], references: [id])
+  invoice             Invoice?                @relation(fields: [invoiceId], references: [id])
+  prescriptionRouting PrescriptionRouting?    @relation(fields: [prescriptionRoutingId], references: [id])
+  relationship        OrganizationRelationship? @relation(fields: [relationshipId], references: [id])
+  decisions           SettlementDecision[]
+
+  @@index([organizationId, status, detectedAt(sort: Desc)])
+  @@index([insuranceClaimId])
+  @@map("settlement_cases")
+}
+
+model SettlementDecision {
+  id               String                 @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  settlementCaseId String                 @map("settlement_case_id") @db.Uuid
+  decisionType     SettlementDecisionType @map("decision_type")
+  decidedBy        String?                @map("decided_by") @db.Uuid
+  rationale        String?                @db.Text
+  decisionPayload  Json?                  @map("decision_payload")
+  decidedAt        DateTime               @default(now()) @map("decided_at")
+
+  settlementCase SettlementCase         @relation(fields: [settlementCaseId], references: [id], onDelete: Cascade)
+  obligations    SettlementObligation[]
+
+  @@index([settlementCaseId, decidedAt(sort: Desc)])
+  @@map("settlement_decisions")
+}
+
+model SettlementObligation {
+  id                   String                    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  settlementDecisionId String                    @map("settlement_decision_id") @db.Uuid
+  organizationId       String                    @map("organization_id") @db.Uuid
+  amount               Decimal                   @db.Decimal(10, 2)
+  currency             String                    @default("USD") @db.VarChar(3)
+  status               SettlementObligationStatus @default(PENDING)
+  dueAt                DateTime?                 @map("due_at")
+  description          String?                   @db.Text
+  createdAt            DateTime                  @default(now()) @map("created_at")
+
+  settlementDecision SettlementDecision @relation(fields: [settlementDecisionId], references: [id], onDelete: Cascade)
+  organization       Organization       @relation(fields: [organizationId], references: [id])
+  allocations        PaymentAllocation[]
+  ledgerEntries      SettlementLedgerEntry[]
+
+  @@index([organizationId, status])
+  @@index([settlementDecisionId])
+  @@map("settlement_obligations")
+}
+
+model SettlementLedgerEntry {
+  id                    String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  settlementObligationId String  @map("settlement_obligation_id") @db.Uuid
+  organizationId        String   @map("organization_id") @db.Uuid
+  amount                Decimal  @db.Decimal(10, 2)
+  direction             FinancialTransactionType
+  referenceType         String?  @map("reference_type") @db.VarChar(50)
+  referenceId           String?  @map("reference_id") @db.Uuid
+  metadata              Json?
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  settlementObligation SettlementObligation @relation(fields: [settlementObligationId], references: [id], onDelete: Cascade)
+  organization         Organization         @relation(fields: [organizationId], references: [id])
+
+  @@index([settlementObligationId, createdAt(sort: Desc)])
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@map("settlement_ledger_entries")
 }
 
 // ============================================================================
@@ -2719,7 +3333,7 @@ model HL7Message {
   messageContent String @map("message_content") @db.Text
   messageHash    String @map("message_hash") @db.VarChar(64)
 
-  status       String    @default("PENDING") @db.VarChar(20)
+  status       HL7MessageStatus @default(PENDING)
   processedAt  DateTime? @map("processed_at")
   errorMessage String?   @map("error_message") @db.Text
 
@@ -2762,11 +3376,36 @@ model AccessToken {
   @@map("access_tokens")
 }
 
+model UserSession {
+  id                 String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId             String   @map("user_id") @db.Uuid
+  refreshTokenHash   String   @unique @map("refresh_token_hash") @db.VarChar(64)
+  sessionFamily      String?  @map("session_family") @db.VarChar(64)
+  deviceId           String?  @map("device_id") @db.VarChar(128)
+  deviceName         String?  @map("device_name") @db.VarChar(255)
+  ipAddress          String?  @map("ip_address") @db.Inet
+  userAgent          String?  @db.Text
+  lastUsedAt         DateTime? @map("last_used_at")
+  expiresAt          DateTime @map("expires_at")
+  revokedAt          DateTime? @map("revoked_at")
+  revokedReason      String?  @map("revoked_reason") @db.Text
+  replacedBySessionId String? @map("replaced_by_session_id") @db.Uuid
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt, revokedAt])
+  @@index([sessionFamily])
+  @@map("user_sessions")
+}
+
 model Role {
   id             String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  name           String   @unique @db.VarChar(100)
+  name           String   @db.VarChar(100)
   description    String?  @db.Text
   permissions    Json
+  scopeKey       String   @default("SYSTEM") @map("scope_key") @db.VarChar(64)
   organizationId String?  @map("organization_id") @db.Uuid
   systemRole     Boolean  @default(false) @map("system_role")
   createdAt      DateTime @default(now()) @map("created_at")
@@ -2775,6 +3414,8 @@ model Role {
   organization Organization? @relation(fields: [organizationId], references: [id])
   userRoles    UserRole[]
 
+  @@unique([scopeKey, name])
+  @@index([organizationId, name])
   @@map("roles")
 }
 
@@ -2786,12 +3427,14 @@ model UserRole {
   grantedAt DateTime  @default(now()) @map("granted_at")
   expiresAt DateTime? @map("expires_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  user      User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      Role  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  grantor   User? @relation("RoleGrantedBy", fields: [grantedBy], references: [id])
 
   @@unique([userId, roleId])
   @@index([userId])
   @@index([roleId])
+  @@index([grantedBy])
   @@map("user_roles")
 }
 
@@ -2820,11 +3463,11 @@ model PatientAccessLog {
   id        String @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   patientId String @map("patient_id") @db.Uuid
 
-  accessorId     String  @map("accessor_id") @db.Uuid
-  accessorType   String  @map("accessor_type") @db.VarChar(50)
+  accessorId     String                @map("accessor_id") @db.Uuid
+  accessorType   PatientAccessActorType @map("accessor_type")
   organizationId String? @map("organization_id") @db.Uuid
 
-  actionType   String  @map("action_type") @db.VarChar(50)
+  actionType   PatientAccessActionType @map("action_type")
   resourceType String? @map("resource_type") @db.VarChar(50)
   resourceId   String? @map("resource_id") @db.Uuid
 
@@ -2874,14 +3517,15 @@ model AuditLog {
 
 model DigitalSignature {
   id         String @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  signerId   String @map("signer_id") @db.Uuid
-  signerType String @map("signer_type") @db.VarChar(50)
+  signerType       DigitalSignatureSignerType @map("signer_type")
+  signerUserId     String? @map("signer_user_id") @db.Uuid
+  signerProviderId String? @map("signer_provider_id") @db.Uuid
 
   // USER signer
-  signer User? @relation("DigitalSignatureSignerUser", fields: [signerId], references: [id], map: "digital_signatures_signer_user_fkey")
+  signer User? @relation("DigitalSignatureSignerUser", fields: [signerUserId], references: [id], map: "digital_signatures_signer_user_fkey")
 
   // PROVIDER signer
-  provider HealthcareProvider? @relation("DigitalSignatureSignerProvider", fields: [signerId], references: [id], map: "digital_signatures_signer_provider_fkey")
+  provider HealthcareProvider? @relation("DigitalSignatureSignerProvider", fields: [signerProviderId], references: [id], map: "digital_signatures_signer_provider_fkey")
 
   resourceType String @map("resource_type") @db.VarChar(50)
   resourceId   String @map("resource_id") @db.Uuid
@@ -2896,11 +3540,12 @@ model DigitalSignature {
   metadata Json?
 
   @@index([resourceType, resourceId])
-  @@index([signerId, signedAt])
+  @@index([signerUserId, signedAt])
+  @@index([signerProviderId, signedAt])
   @@map("digital_signatures")
 }
 
-model DataConsent {
+model ConsentGrant {
   id               String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   patientId        String        @map("patient_id") @db.Uuid
   grantorOrgId     String?       @map("grantor_org_id") @db.Uuid
@@ -2920,11 +3565,84 @@ model DataConsent {
   patient    Patient       @relation(fields: [patientId], references: [id], onDelete: Cascade)
   grantorOrg Organization? @relation("GrantorOrganization", fields: [grantorOrgId], references: [id])
   granteeOrg Organization? @relation("GranteeOrganization", fields: [granteeOrgId], references: [id])
+  transferRequests RecordTransferRequest[]
 
   @@index([patientId, status])
   @@index([granteeOrgId, status])
   @@index([expiresAt, status])
   @@map("data_consents")
+}
+
+model RecordTransferRequest {
+  id                    String                @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  patientId             String                @map("patient_id") @db.Uuid
+  sourceOrganizationId  String                @map("source_organization_id") @db.Uuid
+  targetOrganizationId  String                @map("target_organization_id") @db.Uuid
+  consentGrantId        String?               @map("consent_grant_id") @db.Uuid
+  requestedBy           String?               @map("requested_by") @db.Uuid
+  status                TransferRequestStatus @default(PENDING)
+  requestReason         String?               @map("request_reason") @db.Text
+  approvedAt            DateTime?             @map("approved_at")
+  rejectedAt            DateTime?             @map("rejected_at")
+  expiresAt             DateTime?             @map("expires_at")
+  completedAt           DateTime?             @map("completed_at")
+  createdAt             DateTime              @default(now()) @map("created_at")
+
+  patient            Patient      @relation("TransferRequestPatient", fields: [patientId], references: [id], onDelete: Cascade)
+  sourceOrganization Organization @relation("TransferRequestSourceOrganization", fields: [sourceOrganizationId], references: [id])
+  targetOrganization Organization @relation("TransferRequestTargetOrganization", fields: [targetOrganizationId], references: [id])
+  consentGrant       ConsentGrant? @relation(fields: [consentGrantId], references: [id])
+
+  @@index([patientId, createdAt(sort: Desc)])
+  @@index([sourceOrganizationId, status])
+  @@index([targetOrganizationId, status])
+  @@map("record_transfer_requests")
+}
+
+model EmergencyAccessGrant {
+  id             String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  patientId      String        @map("patient_id") @db.Uuid
+  organizationId String?       @map("organization_id") @db.Uuid
+  grantedBy      String?       @map("granted_by") @db.Uuid
+  reason         String        @db.Text
+  status         ConsentStatus @default(ACTIVE)
+  grantedAt      DateTime      @default(now()) @map("granted_at")
+  expiresAt      DateTime?     @map("expires_at")
+  revokedAt      DateTime?     @map("revoked_at")
+
+  patient      Patient       @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id])
+
+  @@index([patientId, status])
+  @@index([organizationId, status])
+  @@map("emergency_access_grants")
+}
+
+model KycVerification {
+  id              String               @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId          String?              @map("user_id") @db.Uuid
+  providerId      String?              @map("provider_id") @db.Uuid
+  organizationId  String?              @map("organization_id") @db.Uuid
+  entityType      VerificationEntityType @map("entity_type")
+  documentType    String               @map("document_type") @db.VarChar(100)
+  documentNumberHash String?           @map("document_number_hash") @db.VarChar(64)
+  documentDataEncrypted Bytes?         @map("document_data_encrypted")
+  status          VerificationStatus   @default(PENDING)
+  reviewedBy      String?              @map("reviewed_by") @db.Uuid
+  reviewedAt      DateTime?            @map("reviewed_at")
+  notes           String?              @db.Text
+  createdAt       DateTime             @default(now()) @map("created_at")
+  updatedAt       DateTime             @updatedAt @map("updated_at")
+
+  user         User?               @relation(fields: [userId], references: [id])
+  provider     HealthcareProvider? @relation(fields: [providerId], references: [id])
+  organization Organization?       @relation(fields: [organizationId], references: [id])
+
+  @@index([entityType, status, createdAt(sort: Desc)])
+  @@index([userId])
+  @@index([providerId])
+  @@index([organizationId])
+  @@map("kyc_verifications")
 }
 
 model ComplianceIncident {
@@ -3044,7 +3762,9 @@ model ExternalSystem {
   endpoint           String
   authenticationType AuthenticationType @map("authentication_type")
 
-  credentials Json?
+  credentialsEncrypted Bytes?  @map("credentials_encrypted")
+  credentialsHash      String? @map("credentials_hash") @db.VarChar(64)
+  credentialsKeyVersion Int    @default(1) @map("credentials_key_version")
 
   active     Boolean   @default(true)
   lastSyncAt DateTime? @map("last_sync_at")
@@ -3054,6 +3774,7 @@ model ExternalSystem {
 
   organization Organization  @relation(fields: [organizationId], references: [id])
   syncLogs     DataSyncLog[]
+  claimSubmissionLogs ClaimSubmissionLog[]
 
   @@index([organizationId, systemType])
   @@map("external_systems")
@@ -3084,7 +3805,9 @@ model WebhookSubscription {
   organizationId String  @map("organization_id") @db.Uuid
   eventType      String  @map("event_type") @db.VarChar(100)
   url            String
-  secret         String  @db.VarChar(255)
+  secretEncrypted Bytes   @map("secret_encrypted")
+  secretHash      String  @map("secret_hash") @db.VarChar(64)
+  secretKeyVersion Int    @default(1) @map("secret_key_version")
   active         Boolean @default(true)
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -3102,7 +3825,7 @@ model WebhookDelivery {
   eventType      String @map("event_type") @db.VarChar(100)
   payload        Json
 
-  status     String  @default("PENDING") @db.VarChar(20)
+  status     WebhookDeliveryStatus @default(PENDING)
   httpStatus Int?    @map("http_status")
   response   String? @db.Text
 
@@ -3128,11 +3851,11 @@ model DataExportRequest {
   dateRange Json? @map("date_range")
   filters   Json?
 
-  status String @default("PENDING") @db.VarChar(20)
+  status DataExportStatus @default(PENDING)
 
-  fileUrl   String?   @map("file_url")
-  fileSize  Int?      @map("file_size")
-  expiresAt DateTime? @map("expires_at")
+  storageKey String?   @map("storage_key")
+  fileSize   Int?      @map("file_size")
+  expiresAt  DateTime? @map("expires_at")
 
   requestedAt DateTime  @default(now()) @map("requested_at")
   completedAt DateTime? @map("completed_at")
