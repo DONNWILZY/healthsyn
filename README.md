@@ -27,9 +27,57 @@
 
 ## Project setup
 
+Use Node.js 24 and a disposable PostgreSQL 17 database with `pgcrypto` and `uuid-ossp` available.
+
 ```bash
-$ npm install
+npm ci
+cp .env.example .env
+# Set DATABASE_URL to your development database in .env.
+npx prisma validate
+npx prisma migrate deploy
+npx prisma generate
 ```
+
+CI starts an isolated PostgreSQL service, compares the deployed schema with `prisma/schema.prisma`, checks the upgrade against synthetic legacy data, and runs the build, unit tests and HTTP tests.
+
+### Repository foundation migration
+
+The forward reconciliation starts from the schema created by `20251114010044_init` and `20251114013015_second_edition`. Before upgrading an existing environment, inspect its Prisma migration history and schema, restore a recent backup to staging, and rehearse the full upgrade against that copy. Keep legacy writes paused during credential staging and migration. Use `prisma migrate deploy` with your deployment credentials and confirm the schema afterwards.
+
+```bash
+npx prisma migrate status
+npx prisma migrate deploy
+npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
+```
+
+- A database still on the initial migration with existing `payments` needs a separate, reviewed payment-to-organization backfill. The historical second migration adds `payments.organization_id` as required with no value for old rows. Settle the mapping and the migration history for that environment before running the migration chain.
+- Reconciliation normalizes legacy enum strings by trimming spaces and uppercasing them. Unknown values abort the transaction. Reconcile unknown values with the data owner and check references in `patients.closed_by` and `user_roles.granted_by` before staging deployment.
+- Role scopes use the organization UUID as text for organization roles and `SYSTEM` for roles without an organization. Digital signatures move their signer ID into the relation named by their signer type.
+- The password salt, session token, invoice items and export URL remain in their original columns as Prisma-ignored fields. A later migration can address credential verification, session invalidation, invoice-line conversion and export object keys independently. Existing export URLs are not mapped automatically to object keys.
+- If the upgrade fails, use PostgreSQL logs to identify the original error. Verify that the reconciliation transaction rolled back before marking a recorded failed attempt as rolled back with `prisma migrate resolve --rolled-back 20261120130000_reconcile_foundation_schema`. Resolve the underlying data issue and retry on staging first.
+
+#### Legacy integration credentials
+
+For existing webhook subscriptions or external systems with non-null credentials, stage ciphertext, the deployment-approved 64-character hexadecimal digest, and the correct positive key version for each row before deployment. Have the approved encryption service create and verify those values. Record only row counts and verification status in deployment logs. The migration validates that staged fields are present and removes the legacy plaintext columns in the same transaction. It cannot verify decryption or select your encryption key. When both legacy credential sources are empty, skip staging.
+
+Use this staging schema on the rehearsal database and, after validation, in the controlled upgrade:
+
+```sql
+ALTER TABLE external_systems
+    ADD COLUMN IF NOT EXISTS credentials_encrypted BYTEA,
+    ADD COLUMN IF NOT EXISTS credentials_hash VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS credentials_key_version INTEGER DEFAULT 1;
+ALTER TABLE webhook_subscriptions
+    ADD COLUMN IF NOT EXISTS secret_encrypted BYTEA,
+    ADD COLUMN IF NOT EXISTS secret_hash VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS secret_key_version INTEGER DEFAULT 1;
+```
+
+### Transactional email
+
+The sample environment disables delivery. To enable platform SMTP, set `EMAIL_ENABLED=true`, `EMAIL_HOST`, the appropriate port and TLS setting, and SMTP credentials if your server requires them. Existing `SMTP_*` settings are supported. A legacy `SMTP_HOST` enables mail when `EMAIL_ENABLED` is unset. An explicit `EMAIL_ENABLED=false` takes precedence. Supply live credentials through the deployment environment or its secret manager.
+
+The built-in templates ship with the Nest build. Set `EMAIL_TEMPLATES_DIR` only to use an operator-managed template directory. Password reset delivery is an internal service for use by an authenticated or verified identity workflow. Tenant-specific dispatch requires a later phase.
 
 ## Compile and run the project
 

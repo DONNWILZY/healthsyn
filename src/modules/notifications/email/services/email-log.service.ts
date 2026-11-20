@@ -11,30 +11,16 @@ export class EmailLogService {
     toEmail: string;
     subject: string;
     body: string;
-    provider?: string;
+    provider: EmailProvider;
     organizationId?: string;
   }) {
-    const emailConfig = params.organizationId
-      ? await this.prisma.emailProviderConfig.findFirst({
-          where: {
-            organizationId: params.organizationId,
-            isActive: true,
-          },
-          select: {
-            id: true,
-            provider: true,
-          },
-        })
-      : null;
-
     return this.prisma.emailLog.create({
       data: {
         organizationId: params.organizationId,
-        emailConfigId: emailConfig?.id,
         toEmail: params.toEmail,
         subject: params.subject,
         bodyHash: createHash('sha256').update(params.body).digest('hex'),
-        provider: this.asEmailProvider(emailConfig?.provider ?? params.provider),
+        provider: params.provider,
         status: DeliveryStatus.PENDING,
       },
     });
@@ -58,17 +44,5 @@ export class EmailLogService {
         errorMessage,
       },
     });
-  }
-
-  private asEmailProvider(provider?: string | EmailProvider | null): EmailProvider | undefined {
-    if (!provider) {
-      return undefined;
-    }
-
-    if (Object.values(EmailProvider).includes(provider as EmailProvider)) {
-      return provider as EmailProvider;
-    }
-
-    return undefined;
   }
 }

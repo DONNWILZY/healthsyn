@@ -35,7 +35,9 @@ describe('TransactionalEmailService', () => {
   });
 
   it('creates a log, dispatches the email, and marks it as sent', async () => {
-    emailLogService.createPendingLog.mockResolvedValue({ id: 'log-1' } as never);
+    emailLogService.createPendingLog.mockResolvedValue({
+      id: 'log-1',
+    } as never);
 
     await service.sendPasswordResetEmail({
       to: 'patient@example.com',
@@ -47,6 +49,7 @@ describe('TransactionalEmailService', () => {
       expect.objectContaining({
         toEmail: 'patient@example.com',
         subject: 'Reset your HealthSync Pro password',
+        body: JSON.stringify({ template: 'auth/password-reset' }),
       }),
     );
     expect(dispatcher.send).toHaveBeenCalledWith(
@@ -64,7 +67,9 @@ describe('TransactionalEmailService', () => {
   });
 
   it('marks the log as failed when dispatch throws', async () => {
-    emailLogService.createPendingLog.mockResolvedValue({ id: 'log-2' } as never);
+    emailLogService.createPendingLog.mockResolvedValue({
+      id: 'log-2',
+    } as never);
     dispatcher.send.mockRejectedValue(new Error('smtp down'));
 
     await expect(
@@ -75,7 +80,25 @@ describe('TransactionalEmailService', () => {
       }),
     ).rejects.toThrow('smtp down');
 
-    expect(emailLogService.markFailed).toHaveBeenCalledWith('log-2', 'smtp down');
+    expect(emailLogService.markFailed).toHaveBeenCalledWith(
+      'log-2',
+      'Email dispatch failed',
+    );
     expect(emailLogService.markSent).not.toHaveBeenCalled();
+  });
+  it('does not mark a delivered email as failed if writing its sent status fails', async () => {
+    emailLogService.createPendingLog.mockResolvedValue({
+      id: 'log-3',
+    } as never);
+    emailLogService.markSent.mockRejectedValue(
+      new Error('database unavailable'),
+    );
+
+    await expect(
+      service.sendWelcomeEmail({ to: 'patient@example.com', firstName: 'Ada' }),
+    ).rejects.toThrow('database unavailable');
+
+    expect(dispatcher.send).toHaveBeenCalledTimes(1);
+    expect(emailLogService.markFailed).not.toHaveBeenCalled();
   });
 });
