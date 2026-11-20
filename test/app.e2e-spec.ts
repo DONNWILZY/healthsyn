@@ -16,10 +16,25 @@ describe('AppController (e2e)', () => {
     await app.init();
   });
 
+  afterEach(async () => {
+    await app?.close();
+  });
+
   it('/ (GET)', () => {
     return request(app.getHttpServer())
       .get('/')
       .expect(200)
       .expect('Hello World!');
+  });
+
+  it('does not expose password reset email dispatch over HTTP', () => {
+    return request(app.getHttpServer())
+      .post('/notifications/password-reset')
+      .send({
+        to: 'patient@example.com',
+        firstName: 'Ada',
+        resetCode: '123456',
+      })
+      .expect(404);
   });
 });

@@ -1,12 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import { EmailTransport } from '../email.types';
 
 @Injectable()
 export class SmtpEmailProvider implements EmailTransport {
-  private readonly logger = new Logger(SmtpEmailProvider.name);
-  private readonly transporter: nodemailer.Transporter;
+  private readonly transporter?: nodemailer.Transporter;
 
   constructor(private readonly configService: ConfigService) {
     const enabled = this.configService.get<boolean>('email.enabled', false);
@@ -16,10 +15,9 @@ export class SmtpEmailProvider implements EmailTransport {
     const user = this.configService.get<string>('email.user');
     const password = this.configService.get<string>('email.password');
 
-    if (!enabled || !host) {
-      this.transporter = nodemailer.createTransport({ jsonTransport: true });
-      return;
-    }
+    if (!enabled) return;
+    if (!host?.trim())
+      throw new Error('EMAIL_HOST is required when email is enabled');
 
     this.transporter = nodemailer.createTransport({
       host,
@@ -37,7 +35,7 @@ export class SmtpEmailProvider implements EmailTransport {
     html: string;
     text: string;
   }): Promise<void> {
+    if (!this.transporter) throw new Error('Email delivery is disabled');
     await this.transporter.sendMail(options);
-    this.logger.debug(`Email queued for ${options.to} with subject "${options.subject}"`);
   }
 }

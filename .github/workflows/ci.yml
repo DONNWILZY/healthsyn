@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: healthsyn_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d healthsyn_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:ci-only@127.0.0.1:5432/healthsyn_test
+      EMAIL_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx prisma validate
+      - name: Check fresh database and Prisma schema alignment
+        run: |
+          npx prisma migrate deploy
+          npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
+      - name: Verify the populated legacy database upgrade
+        env:
+          DATABASE_URL: postgresql://postgres:ci-only@127.0.0.1:5432/healthsyn_upgrade_test
+        run: |
+          PGPASSWORD=ci-only createdb -h 127.0.0.1 -U postgres healthsyn_upgrade_test
+          legacy_schema_dir="$RUNNER_TEMP/healthsyn-legacy"
+          mkdir -p "$legacy_schema_dir/migrations"
+          cp prisma/schema.prisma "$legacy_schema_dir/schema.prisma"
+          cp -r prisma/migrations/20251114010044_init prisma/migrations/20251114013015_second_edition \
+            prisma/migrations/migration_lock.toml "$legacy_schema_dir/migrations/"
+          npx prisma migrate deploy --schema "$legacy_schema_dir/schema.prisma"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f test/migrations/foundation-fixture.sql
+          migration_sql=prisma/migrations/20261120130000_reconcile_foundation_schema/migration.sql
+          migration_output="$RUNNER_TEMP/healthsyn-expected-migration-error"
+          if psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration_sql" >"$migration_output" 2>&1; then
+            echo 'Expected the migration to reject unconverted credentials' >&2
+            exit 1
+          fi
+          rg -qF 'Stage encrypted external system credentials' "$migration_output"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f test/migrations/foundation-stage.sql
+          npx prisma migrate deploy
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f test/migrations/foundation-assert.sql
+          npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
+      - run: npx prisma generate
+      - run: npm run build
+      - name: Check bundled email templates
+        run: test -s dist/modules/notifications/email/templates/auth/password-reset.hbs
+      - run: npm test -- --runInBand
+      - run: npm run test:e2e -- --runInBand

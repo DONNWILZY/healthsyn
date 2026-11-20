@@ -1,12 +1,18 @@
 import { registerAs } from '@nestjs/config';
-import { join } from 'path';
+import { resolve } from 'path';
 
 export default registerAs('email', () => ({
   enabled: ['true', '1', 'yes', 'on'].includes(
-    (process.env.EMAIL_ENABLED ?? process.env.SMTP_HOST ? 'true' : 'false').toLowerCase(),
+    (
+      process.env.EMAIL_ENABLED?.trim() ||
+      (process.env.SMTP_HOST?.trim() ? 'true' : 'false')
+    ).toLowerCase(),
   ),
   provider: process.env.EMAIL_PROVIDER ?? 'SMTP',
-  fromName: process.env.EMAIL_FROM_NAME ?? process.env.SMTP_FROM_NAME ?? 'HealthSync Pro',
+  fromName:
+    process.env.EMAIL_FROM_NAME ??
+    process.env.SMTP_FROM_NAME ??
+    'HealthSync Pro',
   fromAddress:
     process.env.EMAIL_FROM_ADDRESS ??
     process.env.SMTP_FROM_EMAIL ??
@@ -20,6 +26,6 @@ export default registerAs('email', () => ({
   user: process.env.EMAIL_USER ?? process.env.SMTP_USERNAME,
   password: process.env.EMAIL_PASSWORD ?? process.env.SMTP_PASSWORD,
   templatesDir: process.env.EMAIL_TEMPLATES_DIR
-    ? join(process.cwd(), process.env.EMAIL_TEMPLATES_DIR)
-    : join(process.cwd(), 'src', 'modules', 'notifications', 'email', 'templates'),
+    ? resolve(process.env.EMAIL_TEMPLATES_DIR)
+    : resolve(__dirname, '../modules/notifications/email/templates'),
 }));

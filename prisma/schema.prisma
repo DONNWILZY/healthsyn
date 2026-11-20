@@ -6,7 +6,7 @@
 
 generator client {
   provider        = "prisma-client-js"
-  previewFeatures = ["fullTextSearchPostgres", "fullTextIndex", "postgresqlExtensions"]
+  previewFeatures = ["fullTextSearchPostgres", "postgresqlExtensions"]
 }
 
 datasource db {
@@ -748,6 +748,8 @@ model User {
 
   // Password security (Argon2id recommended)
   passwordHash        String    @map("password_hash") @db.VarChar(255)
+  /// Retained for legacy credential verification during a future identity migration.
+  legacyPasswordSalt  String?   @map("password_salt") @db.VarChar(255) @ignore
   passwordChangedAt   DateTime? @map("password_changed_at")
   failedLoginAttempts Int       @default(0) @map("failed_login_attempts")
   lockedUntil         DateTime? @map("locked_until")
@@ -760,6 +762,8 @@ model User {
   // Session management
   lastLogin    DateTime? @map("last_login")
   lastActivity DateTime? @map("last_activity")
+  /// Retained for legacy session invalidation. New sessions use UserSession.
+  legacySessionToken String? @unique @map("session_token") @db.VarChar(255) @ignore
 
   // Account status
   status        AccountStatus @default(PENDING_VERIFICATION)
@@ -2873,6 +2877,9 @@ model Invoice {
   hospitalId  String? @map("hospital_id") @db.Uuid
   pharmacyId  String? @map("pharmacy_id") @db.Uuid
 
+  /// Original line data, retained until its shape can be mapped to InvoiceLine.
+  legacyItems Json[] @default([]) @map("items") @ignore
+
   subtotal    Decimal  @db.Decimal(10, 2)
   tax         Decimal? @db.Decimal(10, 2)
   discount    Decimal? @db.Decimal(10, 2)
@@ -3853,6 +3860,8 @@ model DataExportRequest {
 
   status DataExportStatus @default(PENDING)
 
+  /// Original URL retained for controlled export migration and audit.
+  legacyFileUrl String? @map("file_url") @ignore
   storageKey String?   @map("storage_key")
   fileSize   Int?      @map("file_size")
   expiresAt  DateTime? @map("expires_at")

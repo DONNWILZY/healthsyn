@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { EmailProvider } from '@prisma/client';
 import { EmailDispatcherService } from './email-dispatcher.service';
 import { EmailLogService } from './email-log.service';
 import { EMAIL_TEMPLATES } from '../email.templates';
@@ -43,6 +44,7 @@ export class TransactionalEmailService {
         firstName: params.firstName,
         resetCode: params.resetCode,
       },
+      sensitive: true,
     });
   }
 
@@ -98,15 +100,16 @@ export class TransactionalEmailService {
     template: string;
     organizationId?: string;
     context: Record<string, unknown>;
+    sensitive?: boolean;
   }) {
     const log = await this.emailLogService.createPendingLog({
       toEmail: params.to,
       subject: params.subject,
       body: JSON.stringify({
         template: params.template,
-        context: params.context,
+        context: params.sensitive ? undefined : params.context,
       }),
-      provider: 'SMTP',
+      provider: EmailProvider.SMTP,
       organizationId: params.organizationId,
     });
 
@@ -117,13 +120,12 @@ export class TransactionalEmailService {
         template: params.template,
         context: params.context,
       });
-      await this.emailLogService.markSent(log.id);
-      return log.id;
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Unknown email dispatch failure';
-      await this.emailLogService.markFailed(log.id, message);
+      await this.emailLogService.markFailed(log.id, 'Email dispatch failed');
       throw error;
     }
+
+    await this.emailLogService.markSent(log.id);
+    return log.id;
   }
 }
